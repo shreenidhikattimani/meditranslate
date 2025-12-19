@@ -17,8 +17,6 @@ import {
   Activity
 } from 'lucide-react';
 
-
-
 const INPUT_LANGUAGES = {
   en: { name: 'English', code: 'en-US', flag: '🇺🇸' },
   es: { name: 'Spanish', code: 'es-ES', flag: '🇪🇸' },
@@ -53,21 +51,17 @@ interface TranslationResult {
 
 export default function HealthcareTranslator() {
 
-  
   const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [translationResult, setTranslationResult] = useState<TranslationResult | null>(null);
 
-  
   const [inputLanguage, setInputLanguage] = useState('en');
   const [targetLanguage, setTargetLanguage] = useState('es'); 
   const [useOfflineMode, setUseOfflineMode] = useState(false);
   const [autoPlayEnabled, setAutoPlayEnabled] = useState(true);
 
-
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [isFallbackMode, setIsFallbackMode] = useState(false); // Safari/Firefox detection
-
+  const [isFallbackMode, setIsFallbackMode] = useState(false);
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -75,15 +69,14 @@ export default function HealthcareTranslator() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-
   const recognitionRef = useRef<any>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const mimeTypeRef = useRef<string>('');
+  
   const autoPlayTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-
 
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
     setToastMessage({ text, type });
@@ -101,9 +94,7 @@ export default function HealthcareTranslator() {
     showToast('Languages Swapped');
   };
 
-
   useEffect(() => {
-
     const loadVoices = () => {
       const voices = window.speechSynthesis.getVoices();
       if (voices.length > 0) setAvailableVoices(voices);
@@ -113,22 +104,30 @@ export default function HealthcareTranslator() {
       window.speechSynthesis.onvoiceschanged = loadVoices;
     }
 
-
     if (typeof window !== 'undefined') {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       
       if (!SpeechRecognition) {
-        console.warn("Native Speech API missing. Switching to Fallback Audio Recorder.");
         setIsFallbackMode(true); 
       }
     }
   }, []);
 
-
   const startFallbackRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
+      
+      let mimeType = 'audio/webm';
+      if (typeof MediaRecorder.isTypeSupported === 'function') {
+        if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          mimeType = 'audio/mp4';
+        } else if (MediaRecorder.isTypeSupported('audio/ogg')) {
+          mimeType = 'audio/ogg'; 
+        }
+      }
+      mimeTypeRef.current = mimeType;
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
@@ -137,11 +136,15 @@ export default function HealthcareTranslator() {
       };
 
       mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeTypeRef.current });
         
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        await handleAudioUpload(audioBlob); 
+        const extension = mimeTypeRef.current.includes('mp4') ? 'mp4' : 
+                          mimeTypeRef.current.includes('ogg') ? 'ogg' : 'webm';
         
-
+        const audioFile = new File([audioBlob], `recording.${extension}`, { type: mimeTypeRef.current });
+        
+        await handleAudioUpload(audioFile); 
+        
         stream.getTracks().forEach(track => track.stop()); 
       };
 
@@ -150,7 +153,7 @@ export default function HealthcareTranslator() {
       setError('');
     } catch (err) {
       console.error("Fallback Mic Error:", err);
-      setError("Microphone access denied. Check settings.");
+      setError("Microphone access denied. Check browser permissions.");
     }
   };
 
@@ -161,9 +164,7 @@ export default function HealthcareTranslator() {
     }
   };
 
-
   useEffect(() => {
-
     if (isFallbackMode || typeof window === 'undefined') return;
 
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -178,8 +179,6 @@ export default function HealthcareTranslator() {
     const languageCode = INPUT_LANGUAGES[inputLanguage as keyof typeof INPUT_LANGUAGES]?.code || 'en-US';
     
     recognition.lang = languageCode;
-    console.log(`🎤 Init Native Mic: ${languageCode}`);
-
     recognition.continuous = true; 
     recognition.interimResults = true; 
     recognition.maxAlternatives = 1;
@@ -206,25 +205,19 @@ export default function HealthcareTranslator() {
       const currentText = finalTranscript || interimTranscript;
       setTranscript(currentText);
 
-
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = setTimeout(() => {
         if (currentText.trim().length > 0) {
-           console.log("Silence detected (4s). Auto-submitting...");
            recognition.stop(); 
         }
       }, 4000); 
     };
 
     recognition.onerror = (e: any) => {
-       console.error('Speech Recognition Error:', e.error);
        if (e.error === 'no-speech') return;
        if (e.error === 'not-allowed') {
          setError('Microphone permission denied.');
          setIsRecording(false);
-       } else if (e.error === 'language-not-supported') {
-
-         console.warn(`Language ${languageCode} not fully supported in this browser.`);
        }
     };
 
@@ -242,10 +235,8 @@ export default function HealthcareTranslator() {
 
   }, [inputLanguage, isFallbackMode]);
 
- 
   const toggleRecording = () => {
     if (isRecording) {
-   
       if (isFallbackMode) {
         stopFallbackRecording();
       } else {
@@ -253,7 +244,6 @@ export default function HealthcareTranslator() {
         setIsRecording(false);
       }
     } else {
-    
       setTranslationResult(null);
       setTranscript('');
       setError('');
@@ -262,13 +252,11 @@ export default function HealthcareTranslator() {
       if (isFallbackMode) {
         startFallbackRecording();
       } else {
- 
         const currentCode = INPUT_LANGUAGES[inputLanguage as keyof typeof INPUT_LANGUAGES]?.code || 'en-US';
         
         if (recognitionRef.current) {
            recognitionRef.current.abort();
            recognitionRef.current.lang = currentCode;
-           console.log(`🚀 Starting Mic with strict language: ${currentCode}`);
            try {
               recognitionRef.current.start();
            } catch(e) {
@@ -279,7 +267,6 @@ export default function HealthcareTranslator() {
     }
   };
 
-  
   const handleTextTranslation = async () => {
     if (!transcript?.trim()) return;
 
@@ -317,13 +304,12 @@ export default function HealthcareTranslator() {
     }
   };
 
- 
-  const handleAudioUpload = async (audioBlob: Blob) => {
+  const handleAudioUpload = async (audioFile: File) => {
     setIsLoading(true);
     setError('');
 
     const formData = new FormData();
-    formData.append('file', audioBlob);
+    formData.append('file', audioFile);
     formData.append('targetLanguage', targetLanguage);
     formData.append('inputLanguage', inputLanguage);
     formData.append('useOffline', String(useOfflineMode));
@@ -334,7 +320,11 @@ export default function HealthcareTranslator() {
         body: formData,
       });
 
-      if (!response.ok) throw new Error('Audio translation failed');
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || 'Audio translation failed');
+      }
+      
       const data = await response.json();
       
       setTranscript(data.original); 
@@ -347,7 +337,6 @@ export default function HealthcareTranslator() {
     }
   };
 
-
   const processTranslationResult = (data: TranslationResult) => {
     setTranslationResult(data);
     if (autoPlayEnabled) {
@@ -358,11 +347,9 @@ export default function HealthcareTranslator() {
     }
   };
 
-
   const handleApiError = (err: any, originalText: string) => {
     if (err.name === 'AbortError') return;
     
-    console.warn("API Error, using fallback display.");
     setTranslationResult({
         original: originalText,
         corrected: `[Error/Offline] ${originalText}`,
@@ -372,15 +359,11 @@ export default function HealthcareTranslator() {
     setError('Service unavailable. Check API Key or Connection.');
   };
 
-
   useEffect(() => {
-    
     if (!isRecording && transcript.trim().length > 0 && !isFallbackMode) {
        handleTextTranslation();
     }
- 
   }, [isRecording]); 
-
 
   const speakTranslation = (textToSpeak?: string) => {
     const text = textToSpeak || translationResult?.translated;
@@ -408,7 +391,6 @@ export default function HealthcareTranslator() {
     utterance.onstart = () => setIsSpeaking(true);
     utterance.onend = () => setIsSpeaking(false);
     utterance.onerror = (e) => {
-        console.error("TTS Error", e);
         setIsSpeaking(false);
     };
 
@@ -427,7 +409,6 @@ export default function HealthcareTranslator() {
     showToast('Copied to clipboard');
   };
 
-
   return (
     <div className="min-h-screen bg-[var(--bg-body)] text-[var(--text-primary)] font-sans">
       
@@ -441,7 +422,6 @@ export default function HealthcareTranslator() {
           <span className="font-bold">{toastMessage.text}</span>
         </div>
       )}
-
 
       <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-gray-200 shadow-sm transition-all duration-300">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
@@ -482,7 +462,6 @@ export default function HealthcareTranslator() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          
           
           <div className={`lg:col-span-4 space-y-6 ${mobileMenuOpen ? 'block fixed inset-0 z-[60] bg-white p-6 overflow-y-auto' : 'hidden lg:block'}`}>
             
@@ -583,7 +562,6 @@ export default function HealthcareTranslator() {
             </div>
           </div>
 
-          
           <div className="lg:col-span-8 space-y-6 md:space-y-8">
             
             <div className="bg-white rounded-3xl md:rounded-[2.5rem] shadow-lg border border-gray-100 overflow-hidden relative transition-all">
@@ -651,7 +629,6 @@ export default function HealthcareTranslator() {
                 )}
               </div>
             </div>
-
 
             {error && (
               <div className="bg-red-50 border-2 border-red-100 rounded-full p-4 flex items-center justify-center gap-3 animate-in fade-in">
