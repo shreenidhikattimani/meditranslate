@@ -53,12 +53,12 @@ interface TranslationResult {
 
 export default function HealthcareTranslator() {
 
-
+  
   const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [translationResult, setTranslationResult] = useState<TranslationResult | null>(null);
 
-
+  
   const [inputLanguage, setInputLanguage] = useState('en');
   const [targetLanguage, setTargetLanguage] = useState('es'); 
   const [useOfflineMode, setUseOfflineMode] = useState(false);
@@ -66,6 +66,7 @@ export default function HealthcareTranslator() {
 
 
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [isFallbackMode, setIsFallbackMode] = useState(false); // Safari/Firefox detection
 
 
   const [isLoading, setIsLoading] = useState(false);
@@ -76,10 +77,10 @@ export default function HealthcareTranslator() {
 
 
   const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const autoPlayTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
-  
-
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
 
@@ -97,66 +98,96 @@ export default function HealthcareTranslator() {
     
     setTranslationResult(null);
     setTranscript('');
-    
     showToast('Languages Swapped');
   };
 
 
   useEffect(() => {
+
     const loadVoices = () => {
       const voices = window.speechSynthesis.getVoices();
-      if (voices.length > 0) {
-        setAvailableVoices(voices);
-      }
+      if (voices.length > 0) setAvailableVoices(voices);
     };
-
     loadVoices();
     if (typeof window !== 'undefined' && window.speechSynthesis) {
       window.speechSynthesis.onvoiceschanged = loadVoices;
     }
+
+
+    if (typeof window !== 'undefined') {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      
+      if (!SpeechRecognition) {
+        console.warn("Native Speech API missing. Switching to Fallback Audio Recorder.");
+        setIsFallbackMode(true); 
+      }
+    }
   }, []);
 
 
+  const startFallbackRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        await handleAudioUpload(audioBlob); 
+        
+
+        stream.getTracks().forEach(track => track.stop()); 
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setError('');
+    } catch (err) {
+      console.error("Fallback Mic Error:", err);
+      setError("Microphone access denied. Check settings.");
+    }
+  };
+
+  const stopFallbackRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
 
+    if (isFallbackMode || typeof window === 'undefined') return;
 
-    const SpeechRecognition =
-      (window as any).SpeechRecognition ||
-      (window as any).webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      setError('Your browser does not support Speech Recognition. Please use Google Chrome.');
-      return;
-    }
-
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
 
     if (recognitionRef.current) {
       recognitionRef.current.abort();
       recognitionRef.current = null;
     }
 
-
     const recognition = new SpeechRecognition();
-    
-
     const languageCode = INPUT_LANGUAGES[inputLanguage as keyof typeof INPUT_LANGUAGES]?.code || 'en-US';
     
     recognition.lang = languageCode;
-    console.log(`🎤 Microphone initialized. Listening for: ${languageCode} (${inputLanguage})`);
+    console.log(`🎤 Init Native Mic: ${languageCode}`);
 
     recognition.continuous = true; 
     recognition.interimResults = true; 
     recognition.maxAlternatives = 1;
 
-
-
     recognition.onstart = () => {
       setIsRecording(true);
       setError('');
       stopSpeaking();
-
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     };
 
@@ -172,14 +203,11 @@ export default function HealthcareTranslator() {
         }
       }
 
-
       const currentText = finalTranscript || interimTranscript;
       setTranscript(currentText);
 
 
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-
-
       silenceTimerRef.current = setTimeout(() => {
         if (currentText.trim().length > 0) {
            console.log("Silence detected (4s). Auto-submitting...");
@@ -189,91 +217,74 @@ export default function HealthcareTranslator() {
     };
 
     recognition.onerror = (e: any) => {
-      console.error('Speech Recognition Error:', e.error);
-      
-      if (e.error === 'no-speech') {
+       console.error('Speech Recognition Error:', e.error);
+       if (e.error === 'no-speech') return;
+       if (e.error === 'not-allowed') {
+         setError('Microphone permission denied.');
+         setIsRecording(false);
+       } else if (e.error === 'language-not-supported') {
 
-        return; 
-      }
-      
-      if (e.error === 'not-allowed') {
-        setError('Microphone permission denied. Please allow access.');
-        setIsRecording(false);
-      } else if (e.error === 'language-not-supported') {
-        setError(`This browser does not support ${languageCode}. Try Chrome.`);
-        setIsRecording(false);
-      } else {
-
-      }
+         console.warn(`Language ${languageCode} not fully supported in this browser.`);
+       }
     };
 
     recognition.onend = () => {
       setIsRecording(false);
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      console.log('Microphone stopped.');
     };
 
     recognitionRef.current = recognition;
 
-
     return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.abort();
-      }
+      if (recognitionRef.current) recognitionRef.current.abort();
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     };
 
+  }, [inputLanguage, isFallbackMode]);
 
-  }, [inputLanguage]);
-
-
-const toggleRecording = () => {
+ 
+  const toggleRecording = () => {
     if (isRecording) {
-
-      recognitionRef.current?.stop();
-      setIsRecording(false);
+   
+      if (isFallbackMode) {
+        stopFallbackRecording();
+      } else {
+        recognitionRef.current?.stop();
+        setIsRecording(false);
+      }
     } else {
-
+    
       setTranslationResult(null);
       setTranscript('');
       setError('');
       stopSpeaking();
 
-
-      const currentCode = INPUT_LANGUAGES[inputLanguage as keyof typeof INPUT_LANGUAGES]?.code || 'en-US';
-      
-      if (recognitionRef.current) {
-
-         recognitionRef.current.abort();
-         
-
-         recognitionRef.current.lang = currentCode;
-         
-         console.log(`🚀 Starting Mic with strict language: ${currentCode}`);
-         
-         try {
-            recognitionRef.current.start();
-         } catch(e) {
-            console.error("Mic start error:", e);
-         }
+      if (isFallbackMode) {
+        startFallbackRecording();
+      } else {
+ 
+        const currentCode = INPUT_LANGUAGES[inputLanguage as keyof typeof INPUT_LANGUAGES]?.code || 'en-US';
+        
+        if (recognitionRef.current) {
+           recognitionRef.current.abort();
+           recognitionRef.current.lang = currentCode;
+           console.log(`🚀 Starting Mic with strict language: ${currentCode}`);
+           try {
+              recognitionRef.current.start();
+           } catch(e) {
+              console.error("Mic start error:", e);
+           }
+        }
       }
     }
   };
 
-
-
-  const handleTranslation = async () => {
-    const textToTranslate = transcript;
-
-    if (!textToTranslate || !textToTranslate.trim()) {
-      return;
-    }
+  
+  const handleTextTranslation = async () => {
+    if (!transcript?.trim()) return;
 
     stopSpeaking();
-
-    if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-    }
+    if (abortControllerRef.current) abortControllerRef.current.abort();
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
@@ -281,63 +292,94 @@ const toggleRecording = () => {
     setError('');
 
     try {
-      let data: TranslationResult;
+      const response = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: transcript,
+          targetLanguage,
+          inputLanguage,
+          useOffline: useOfflineMode,
+          medicalCorrection: true,
+        }),
+        signal: controller.signal
+      });
 
-      try {
-        const response = await fetch('/api/translate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: textToTranslate,
-            targetLanguage,
-            inputLanguage,
-            useOffline: useOfflineMode,
-            medicalCorrection: true,
-          }),
-          signal: controller.signal
-        });
+      if (!response.ok) throw new Error('API request failed');
+      const data = await response.json();
+      
+      processTranslationResult(data);
 
-        if (!response.ok) throw new Error('API request failed');
-        data = await response.json();
-
-      } catch (apiError) {
-        console.warn("API unavailable, using mock data for demo.");
-        await new Promise(resolve => setTimeout(resolve, 1500)); 
-        
-        data = {
-            original: textToTranslate,
-            corrected: `[Medical Correction] ${textToTranslate}`,
-            translated: `[Translated to ${TARGET_LANGUAGES[targetLanguage as keyof typeof TARGET_LANGUAGES].name}]: ${textToTranslate}`,
-            confidence: 0.95
-        };
-      }
-
-      setTranslationResult(data);
-
-      if (autoPlayEnabled) {
-        if (autoPlayTimeoutRef.current) clearTimeout(autoPlayTimeoutRef.current);
-        autoPlayTimeoutRef.current = setTimeout(() => {
-          speakTranslation(data.translated);
-        }, 500);
-      }
     } catch (err: any) {
-        if (err.name !== 'AbortError') {
-            setError('Translation service unavailable.');
-        }
+       handleApiError(err, transcript);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+ 
+  const handleAudioUpload = async (audioBlob: Blob) => {
+    setIsLoading(true);
+    setError('');
+
+    const formData = new FormData();
+    formData.append('file', audioBlob);
+    formData.append('targetLanguage', targetLanguage);
+    formData.append('inputLanguage', inputLanguage);
+    formData.append('useOffline', String(useOfflineMode));
+
+    try {
+      const response = await fetch('/api/translate', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error('Audio translation failed');
+      const data = await response.json();
+      
+      setTranscript(data.original); 
+      processTranslationResult(data);
+
+    } catch (err: any) {
+      handleApiError(err, "Audio Processing...");
     } finally {
       setIsLoading(false);
     }
   };
 
 
-  useEffect(() => {
-
-    if (!isRecording && transcript.trim().length > 0) {
-       handleTranslation();
+  const processTranslationResult = (data: TranslationResult) => {
+    setTranslationResult(data);
+    if (autoPlayEnabled) {
+      if (autoPlayTimeoutRef.current) clearTimeout(autoPlayTimeoutRef.current);
+      autoPlayTimeoutRef.current = setTimeout(() => {
+        speakTranslation(data.translated);
+      }, 500);
     }
+  };
 
+
+  const handleApiError = (err: any, originalText: string) => {
+    if (err.name === 'AbortError') return;
+    
+    console.warn("API Error, using fallback display.");
+    setTranslationResult({
+        original: originalText,
+        corrected: `[Error/Offline] ${originalText}`,
+        translated: "Translation Service Unavailable",
+        confidence: 0
+    });
+    setError('Service unavailable. Check API Key or Connection.');
+  };
+
+
+  useEffect(() => {
+    
+    if (!isRecording && transcript.trim().length > 0 && !isFallbackMode) {
+       handleTextTranslation();
+    }
+ 
   }, [isRecording]); 
-
 
 
   const speakTranslation = (textToSpeak?: string) => {
@@ -363,7 +405,6 @@ const toggleRecording = () => {
 
     utterance.rate = 0.9;
     utterance.pitch = 1.0;
-
     utterance.onstart = () => setIsSpeaking(true);
     utterance.onend = () => setIsSpeaking(false);
     utterance.onerror = (e) => {
@@ -385,7 +426,6 @@ const toggleRecording = () => {
     navigator.clipboard.writeText(text);
     showToast('Copied to clipboard');
   };
-
 
 
   return (
@@ -443,7 +483,7 @@ const toggleRecording = () => {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           
-
+          
           <div className={`lg:col-span-4 space-y-6 ${mobileMenuOpen ? 'block fixed inset-0 z-[60] bg-white p-6 overflow-y-auto' : 'hidden lg:block'}`}>
             
             {mobileMenuOpen && (
@@ -543,10 +583,9 @@ const toggleRecording = () => {
             </div>
           </div>
 
-
+          
           <div className="lg:col-span-8 space-y-6 md:space-y-8">
             
-
             <div className="bg-white rounded-3xl md:rounded-[2.5rem] shadow-lg border border-gray-100 overflow-hidden relative transition-all">
                
                <div className="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-blue-400 via-purple-400 to-blue-400 opacity-50"></div>
@@ -558,9 +597,7 @@ const toggleRecording = () => {
               
               <div className="p-6 md:p-10 flex flex-col items-center justify-center space-y-8 md:space-y-10">
                 
-
                 <div className="relative flex items-center justify-center py-4 md:py-8">
-                  
                   {isRecording && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                       <div className="absolute w-24 h-24 md:w-28 md:h-28 rounded-full border border-blue-400 opacity-0 animate-[ping_1.5s_cubic-bezier(0,0,0.2,1)_infinite]"></div>
@@ -593,13 +630,14 @@ const toggleRecording = () => {
 
                 <div className="text-center space-y-2 md:space-y-3">
                    <p className="text-2xl md:text-3xl font-bold text-gray-900 tracking-tight">
-                     {isRecording ? 'Listening...' : 'Tap to Speak'}
+                     {isRecording ? 'Listening...' : (isFallbackMode ? 'Tap to Record' : 'Tap to Speak')}
                    </p>
                    <p className="text-sm md:text-base text-gray-500 font-medium px-4">
-                     {isRecording ? 'Auto-sends after 4s of silence...' : 'Tap microphone to start translating.'}
+                     {isFallbackMode 
+                        ? 'Using Audio Recorder (Safari/Firefox Mode)' 
+                        : (isRecording ? 'Auto-sends after 4s of silence...' : 'Tap microphone to start translating.')}
                    </p>
                 </div>
-
 
                 {transcript && (
                   <div className="w-full max-w-xl animate-in fade-in slide-in-from-bottom-4">
@@ -622,7 +660,6 @@ const toggleRecording = () => {
               </div>
             )}
 
-
             {isLoading && (
                <div className="flex flex-col items-center justify-center py-12 md:py-16 space-y-6 bg-white rounded-3xl md:rounded-[2.5rem] shadow-lg border border-gray-100">
                   <div className="relative">
@@ -636,7 +673,6 @@ const toggleRecording = () => {
             {translationResult && !isLoading && (
               <div className="grid grid-cols-1 gap-6 md:gap-8 animate-in slide-in-from-bottom-12 duration-700">
                 
-
                 <div className="bg-white rounded-3xl md:rounded-[2.5rem] shadow-lg border border-emerald-100 overflow-hidden">
                    <div className="bg-emerald-50/80 px-6 md:px-8 py-5 border-b border-emerald-100 flex justify-between items-center">
                       <div className="flex items-center gap-3">
@@ -657,7 +693,6 @@ const toggleRecording = () => {
                    </div>
                 </div>
 
- 
                 <div className="rounded-3xl md:rounded-[2.5rem] p-[3px] bg-gradient-to-br from-blue-400 via-purple-400 to-pink-400 shadow-xl shadow-blue-100">
                   <div className="bg-white rounded-[1.3rem] md:rounded-[2.3rem] overflow-hidden h-full relative">
                       
