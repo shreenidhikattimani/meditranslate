@@ -1,15 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
+import Groq from 'groq-sdk';
 
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile'; 
 
+const GROQ_TEXT_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile'; 
+const GROQ_AUDIO_MODEL = 'distil-whisper-large-v3-en'; 
 
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'mistral'; 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434'; 
 
 const REQUEST_TIMEOUT_MS = 60000; 
+
+
+const groq = new Groq({ apiKey: GROQ_API_KEY });
 
 interface TranslationRequest {
   text: string;
@@ -24,16 +29,57 @@ interface TranslationRequest {
 
 export async function POST(req: NextRequest) {
   try {
-    const body: TranslationRequest = await req.json();
-    const {
-      text,
-      targetLanguage,
-      inputLanguage = 'auto',
-      useOffline = false,
-      medicalCorrection = true, 
-      simplify = false,
-      dialect = 'standard'
-    } = body;
+
+    let text = '';
+    let targetLanguage = 'es';
+    let inputLanguage = 'auto';
+    let useOffline = false;
+    let medicalCorrection = true;
+    let simplify = false;
+    let dialect = 'standard';
+
+
+    const contentType = req.headers.get('content-type') || '';
+
+    if (contentType.includes('multipart/form-data')) {
+      
+      const formData = await req.formData();
+      const file = formData.get('file') as File;
+      
+     
+      targetLanguage = (formData.get('targetLanguage') as string) || 'es';
+      inputLanguage = (formData.get('inputLanguage') as string) || 'auto';
+      useOffline = formData.get('useOffline') === 'true';
+      
+      if (!file) {
+        return NextResponse.json({ error: 'No audio file uploaded' }, { status: 400 });
+      }
+
+      console.log(`[API] 🎙️ Processing Audio File (${file.size} bytes)...`);
+
+      
+      const transcription = await groq.audio.transcriptions.create({
+        file: file,
+        model: GROQ_AUDIO_MODEL,
+        response_format: 'json',
+        temperature: 0.0,
+      });
+
+      text = transcription.text;
+      console.log(`[API] 📝 Audio Transcribed: "${text.slice(0, 50)}..."`);
+
+    } else {
+
+      const body: TranslationRequest = await req.json();
+      text = body.text;
+      targetLanguage = body.targetLanguage;
+      inputLanguage = body.inputLanguage || 'auto';
+      useOffline = body.useOffline || false;
+      medicalCorrection = body.medicalCorrection ?? true;
+      simplify = body.simplify || false;
+      dialect = body.dialect || 'standard';
+    }
+
 
     if (!text?.trim()) {
       return NextResponse.json({ error: 'Input text is empty.' }, { status: 400 });
@@ -43,9 +89,9 @@ export async function POST(req: NextRequest) {
     const targetLanguageName = getLanguageName(targetLanguage);
     const inputLanguageName = getLanguageName(inputLanguage);
     
-    console.log(`[API] Processing: "${cleanedInput.slice(0, 30)}..." (${inputLanguageName} -> ${targetLanguageName})`);
+    console.log(`[API] 🔄 Translating: "${cleanedInput.slice(0, 30)}..." (${inputLanguageName} -> ${targetLanguageName})`);
 
-  
+
     let correctedSourceText = cleanedInput;
 
     if (medicalCorrection) {
@@ -62,12 +108,12 @@ export async function POST(req: NextRequest) {
       const rawCorrection = await callLLMWithTimeout(
         cleanupSystemPrompt, 
         cleanupUserPrompt, 
-        false,
+        false, 
         useOffline
       );
       
       correctedSourceText = cleanLLMOutput(rawCorrection);
-      console.log(`[Step 1 Fix] "${cleanedInput}" -> "${correctedSourceText}"`);
+
     }
 
   
@@ -91,11 +137,11 @@ export async function POST(req: NextRequest) {
 
     CRITICAL RULES:
     1. "corrected": MUST ALWAYS BE ENGLISH. It is the medical summary for the doctor.
-       - If Input (${inputLanguageName}) is "머리가 아파요" (Korean) -> "corrected" must be "Patient reports headache" (English).
+       - If Input is "머리가 아파요" (Korean) -> "corrected" must be "Patient reports headache" (English).
     
     2. "translated": MUST ALWAYS BE ${targetLanguageName}.
        - It must be a direct translation from ${inputLanguageName} to ${targetLanguageName}.
-       - Do not simply translate the English summary; preserve the nuance of the original ${inputLanguageName} input.
+       - Preserve the nuance of the original input.
 
     ${styleInstruction}`;
 
@@ -134,10 +180,12 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (err: any) {
-    console.error('[API] Critical Error:', err.message);
+    console.error('[API] Critical Error:', err);
+    
     const errorMessage = err.message.includes('fetch failed') 
       ? 'Could not connect to AI Service. Check your internet.' 
       : err.message || 'Translation processing failed';
+
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
@@ -188,7 +236,7 @@ async function callGroq(system: string, user: string, isJSON: boolean, signal: A
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: GROQ_MODEL,
+      model: GROQ_TEXT_MODEL,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user }
