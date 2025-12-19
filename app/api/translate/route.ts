@@ -1,18 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Groq from 'groq-sdk';
 
-
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-
-
 const GROQ_TEXT_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile'; 
-const GROQ_AUDIO_MODEL = 'distil-whisper-large-v3-en'; 
+const GROQ_AUDIO_MODEL = 'whisper-large-v3'; 
 
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'mistral'; 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434'; 
 
 const REQUEST_TIMEOUT_MS = 60000; 
-
 
 const groq = new Groq({ apiKey: GROQ_API_KEY });
 
@@ -29,7 +25,6 @@ interface TranslationRequest {
 
 export async function POST(req: NextRequest) {
   try {
-
     let text = '';
     let targetLanguage = 'es';
     let inputLanguage = 'auto';
@@ -38,15 +33,12 @@ export async function POST(req: NextRequest) {
     let simplify = false;
     let dialect = 'standard';
 
-
     const contentType = req.headers.get('content-type') || '';
 
     if (contentType.includes('multipart/form-data')) {
-      
       const formData = await req.formData();
       const file = formData.get('file') as File;
       
-     
       targetLanguage = (formData.get('targetLanguage') as string) || 'es';
       inputLanguage = (formData.get('inputLanguage') as string) || 'auto';
       useOffline = formData.get('useOffline') === 'true';
@@ -55,9 +47,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'No audio file uploaded' }, { status: 400 });
       }
 
-      console.log(`[API] 🎙️ Processing Audio File (${file.size} bytes)...`);
-
-      
       const transcription = await groq.audio.transcriptions.create({
         file: file,
         model: GROQ_AUDIO_MODEL,
@@ -66,10 +55,8 @@ export async function POST(req: NextRequest) {
       });
 
       text = transcription.text;
-      console.log(`[API] 📝 Audio Transcribed: "${text.slice(0, 50)}..."`);
 
     } else {
-
       const body: TranslationRequest = await req.json();
       text = body.text;
       targetLanguage = body.targetLanguage;
@@ -80,7 +67,6 @@ export async function POST(req: NextRequest) {
       dialect = body.dialect || 'standard';
     }
 
-
     if (!text?.trim()) {
       return NextResponse.json({ error: 'Input text is empty.' }, { status: 400 });
     }
@@ -89,9 +75,6 @@ export async function POST(req: NextRequest) {
     const targetLanguageName = getLanguageName(targetLanguage);
     const inputLanguageName = getLanguageName(inputLanguage);
     
-    console.log(`[API] 🔄 Translating: "${cleanedInput.slice(0, 30)}..." (${inputLanguageName} -> ${targetLanguageName})`);
-
-
     let correctedSourceText = cleanedInput;
 
     if (medicalCorrection) {
@@ -113,11 +96,8 @@ export async function POST(req: NextRequest) {
       );
       
       correctedSourceText = cleanLLMOutput(rawCorrection);
-
     }
 
-  
-    
     const styleInstruction = simplify
       ? `Style: Simple, everyday language for a layperson. Dialect: ${dialect}.`
       : `Style: Formal clinical terminology. Precise definitions.`;
@@ -160,9 +140,7 @@ export async function POST(req: NextRequest) {
 
     const parsed = safeJSONParse(llmResponse);
 
-
     if (!parsed || !parsed.translated) {
-      console.error("[API] JSON Parse Failed. Raw:", llmResponse);
       const cleanFallback = cleanLLMOutput(llmResponse.replace(/[{}]/g, ''));
       return NextResponse.json({
         original: cleanedInput,
@@ -189,8 +167,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
-
-
 
 function cleanLLMOutput(text: string): string {
   if (!text) return "";
@@ -219,7 +195,6 @@ async function callLLMWithTimeout(
     if (canUseGroq) {
       result = await callGroq(systemPrompt, userPrompt, isJSON, controller.signal);
     } else {
-      console.log('[LLM] Using Local Ollama...');
       result = await callOllama(systemPrompt, userPrompt, isJSON, controller.signal);
     }
     return result;
