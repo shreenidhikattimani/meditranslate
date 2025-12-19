@@ -12,6 +12,7 @@
     "@heroui/react": "^2.8.6",
     "clsx": "^2.1.1",
     "framer-motion": "^12.23.26",
+    "groq-sdk": "^0.37.0",
     "lucide-react": "^0.561.0",
     "next": "16.0.10",
     "react": "19.2.1",
